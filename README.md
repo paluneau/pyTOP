@@ -8,4 +8,4 @@ The FEM module (`fem2d`) allows the user to create a structured triangular mesh.
 
 ## Topology optimization
 
-_Coming soon..._
+The FEM module can be used to resolve topology optimization problems. In the [TO example notebook](https://github.com/paluneau/pyTOP/blob/main/top_example.ipynb), a classical MBB beam example can be seen.
