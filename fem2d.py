@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import abc
+import scipy.sparse as sp
 
 ######################################################
 #
@@ -77,6 +78,7 @@ class Mesh:
         return self._right.copy()
 
     def _generateMesh(self, nelemx, nelemy):
+        print("Beginning mesh generation...")
         ## CONSTRUCTION DU MAILLAGE
         # Géométrie rectangulaire HxL
         coin = [0,0]
@@ -128,9 +130,11 @@ class Mesh:
         self._right = np.arange(2*nelemx-1,self._nelem,2*nelemx)
         self._bottom = np.arange(0,2*nelemx-1,2)
         self._top = np.arange(2*(nelemy-1)*nelemx+1,self._nelem,2)
+        print("Mesh generated!")
+
 
     def displayMesh(self):
-        plt.figure(figsize=(16,8))
+        plt.figure(figsize=(32,16))
         plt.scatter(self._coord[:,0],self._coord[:,1])
         for i, txt in enumerate(range(self._nnodes)):
             plt.annotate(txt, (self._coord[i,0], self._coord[i,1]))
@@ -471,12 +475,13 @@ class Problem:
                         self._neumannNodal[noDDLs[i]] = valDDLs[i]*(self._refElem.intXfik(0)+self._refElem.intXfik(1))
 
     def solve(self):
-        ## ASSEMBLAGE DU SYSTÈME GLOBAL
+        ## GLOBAL SYSTEM ASSEMBLY
+        print("Beginning assembly...")
         nelem = self._mesh.getNelems()
 
         A = np.zeros((self._nddls,self._nddls))
         F = np.zeros(self._nddls)
-        Aelem = np.zeros((self._nddls,nelem*self._nddls))
+        Aelem = sp.lil_matrix(np.zeros((self._nddls,nelem*self._nddls)))
         for k in range(nelem):
             for i in range(self._addres.shape[1]):
                 ddli = self._addres[k,i]
@@ -484,20 +489,45 @@ class Problem:
                     F[ddli] += Int.integrate(i,k)
                 for j in range(self._addres.shape[1]):
                     ddlj = self._addres[k,j]
+                    daij = 0
                     for Int in self._MatrixContribution:
                         valint = Int.integrate(i,j,k)
-                        A[ddli,ddlj] += valint
+                        daij += valint
                         F[ddli] -= self._dirichletNodal[ddlj]*valint
-                    Aelem[ddli,ddlj+k*self._nddls] += A[ddli,ddlj]     
+                    A[ddli,ddlj] += daij
+                    Aelem[ddli,ddlj+k*self._nddls] = daij
+
+        print("Assembly done!")
+        print("Elementary matrices validation...")
+        tempA = np.zeros_like(A)
+        for i in range(nelem):
+            tempA += Aelem[:,(i*self._nddls):((i+1)*self._nddls)]
+        assert(np.allclose(tempA, A))
+        print("Matrices validated!")
+        print("Beginning solving...")   
         
-        # Resolution
-        U = np.linalg.solve(A[self._freeDDLs][:,self._freeDDLs],F[self._freeDDLs]+self._neumannNodal[self._freeDDLs])
+        # Resolution (iterative refinement)
+        r = 10
+        U = 0
+        cnt = 0
+        while np.linalg.norm(r)>1e-10 and cnt < 10:
+            subA = A[self._freeDDLs][:,self._freeDDLs]
+            subb = F[self._freeDDLs]+self._neumannNodal[self._freeDDLs]
+            U = np.linalg.solve(subA,subb)
+            r = subb - subA@U
+            print(f"condA={np.linalg.cond(subA)}")
+            print(f"residual={np.linalg.norm(r)}")
+            corr = np.linalg.solve(subA, r) 
+            U = U + corr
+            cnt = cnt + 1
+
         self._currentSol = np.zeros(self._nddls)
         self._currentSol[self._freeDDLs] = U
         self._currentSol += self._dirichletNodal
         self._currentMatrix = A
-        self._currentRHS = F
+        self._currentRHS = F + self._neumannNodal
         self._currentElemMat = Aelem
+        print("Solved!")   
         return self._currentSol.copy()
 
     def getCurrentMatrix(self):
