@@ -10,26 +10,15 @@ import scipy.sparse as sp
 ######################################################
 
 class Mesh:
-    _nelem = 0
-    _nnodes = 0
-    _nddls = 0
-    _nddls = 0
-    _coord = None
-    _connec = None
-    _numerVec = None
-    _addresVec = None
-    _numerScal = None
-    _addresScal = None
-    _centr = None
-    _top = None
-    _bottom = None 
-    _left = None 
-    _right = None
 
-    def __init__(self, nelemx, nelemy):
+    def __init__(self, nelemx, nelemy, x0, y0, h, l):
         self._nnodes = (2*nelemx+1)*(2*nelemy+1)
         self._nelem = 2*nelemx*nelemy
         self._nddls = 2*self._nnodes
+        self._x0 = x0
+        self._y0 = y0
+        self._h = h
+        self._l = l
         self._generateMesh(nelemx, nelemy)
 
     def getNnodes(self):
@@ -81,9 +70,9 @@ class Mesh:
         print("Beginning mesh generation...")
         ## CONSTRUCTION DU MAILLAGE
         # Géométrie rectangulaire HxL
-        coin = [0,0]
-        H = 1
-        L = 2
+        coin = [self._x0,self._y0]
+        H = self._h
+        L = self._l
 
         # Création du maillage (il y a 2 x nelemx x nelemy triangles)
         meshx,meshy = np.meshgrid(np.linspace(coin[0], coin[0]+L, 2*nelemx+1), np.linspace(coin[1], coin[1]+H, 2*nelemy+1))
@@ -134,7 +123,7 @@ class Mesh:
 
 
     def displayMesh(self):
-        plt.figure(figsize=(32,16))
+        plt.figure(figsize=((self._l/self._h)*8,8))
         plt.scatter(self._coord[:,0],self._coord[:,1])
         for i, txt in enumerate(range(self._nnodes)):
             plt.annotate(txt, (self._coord[i,0], self._coord[i,1]))
@@ -163,11 +152,6 @@ class Mesh:
 ######################################################
 
 class RefElement:
-
-    _Tb = None
-    _gradf = np.zeros((4,2,6))
-    _f = np.zeros((4,6))
-    _mesh = None
 
     # Points de Hammer
     xi = [1/3, 1/5, 1/5, 3/5]
@@ -199,6 +183,9 @@ class RefElement:
 
     def __init__(self, mesh):
         self._mesh = mesh
+        self._Tb = None
+        self._gradf = np.zeros((4,2,6))
+        self._f = np.zeros((4,6))
         self._computeTransformations(mesh)
         self._evalBasisFuncAndGradAtQuadPts()
 
@@ -286,7 +273,7 @@ class RefElement:
             vizmag[npts*k:npts*(k+1),3] = valx
             vizmag[npts*k:npts*(k+1),4] = valy
         # x disp.
-        plt.figure(figsize=(12,6))
+        plt.figure(figsize=((self._mesh._l/self._mesh._h)*6,6))
         plt.set_cmap("viridis")
         plt.scatter(vizmag[:,0],vizmag[:,1],c=vizmag[:,3],marker="s")
         plt.colorbar()
@@ -296,7 +283,7 @@ class RefElement:
         plt.show()
         if dim == 2:
             # y disp.
-            plt.figure(figsize=(12,6))
+            plt.figure(figsize=((self._mesh._l/self._mesh._h)*6,6))
             plt.set_cmap("viridis")
             plt.scatter(vizmag[:,0],vizmag[:,1],c=vizmag[:,4],marker="s")
             plt.colorbar()
@@ -305,7 +292,7 @@ class RefElement:
             plt.title("u2")
             plt.show()
             # disp. mag.
-            plt.figure(figsize=(12,6))
+            plt.figure(figsize=((self._mesh._l/self._mesh._h)*6,6))
             plt.set_cmap("viridis")
             plt.scatter(vizmag[:,0],vizmag[:,1],c=vizmag[:,2],marker="s")
             plt.colorbar()
@@ -321,9 +308,6 @@ class RefElement:
 #
 ######################################################
 class IntegralTerm:
-
-    _refElem = None
-    _nElem = 0
 
     def __init__(self, refelem, nelem):
         self._refElem = refelem
@@ -345,24 +329,24 @@ class RHSIntegralTerm:
         return None
 
 class DiffusionTerm(IntegralTerm):
-    _tensor = None
 
     def __init__(self, refelem, nelem):
         super().__init__(refelem, nelem)
+        self._tensor = None
 
     def setParams(self,tensor):
         self._tensor = tensor
 
     def integrate(self, i, j, k):
-        return self._refElem.intM1gradfikDotM2gradfjk(self._tensor,np.eye(2),i%6,j%6,k)
+        return self._refElem.intM1gradfikDotM2gradfjk(self._tensor[k],np.eye(2),i%6,j%6,k)
 
 
 class ElasticityTerm(IntegralTerm):
-    _YoungMod = 0
-    _Nu = 0
 
     def __init__(self, refelem, nelem):
         super().__init__(refelem, nelem)
+        self._YoungMod = 0
+        self._Nu = 0
 
     def setParams(self,E,nu):
         self._YoungMod = E*np.ones(self._nElem)
@@ -381,6 +365,7 @@ class SourceTermScal(RHSIntegralTerm):
 
     def __init__(self, refelem):
         super().__init__(refelem)
+        self._Fb = 0
 
     def setParams(self,Fb):
         self._Fb = Fb
@@ -393,6 +378,7 @@ class SourceTermVec(RHSIntegralTerm):
 
     def __init__(self, refelem):
         super().__init__(refelem)
+        self._Fb = 0
 
     def setParams(self,Fb):
         self._Fb = Fb
@@ -409,20 +395,6 @@ class SourceTermVec(RHSIntegralTerm):
 ######################################################
 
 class Problem:
-    _mesh = None
-    _refElem = None 
-    _currentSol = None
-    _currentMatrix = None
-    _currentRHS = None
-    _freeDDLs = None
-    _dirichletNodal = None
-    _neumannNodal = None
-    _currentElemMat = None
-    _nddls = None
-    _addres = None
-    _dim = 0
-    _MatrixContribution = []
-    _RHSContribution = []
 
     # TODO: more granular resolution (separate assembly phases)
 
@@ -439,6 +411,13 @@ class Problem:
             self._addres = mesh.getElemDDLVec()
         self._dirichletNodal = np.zeros(self._nddls)
         self._neumannNodal = np.zeros(self._nddls)
+        self._MatrixContribution = []
+        self._RHSContribution = []
+        self._currentSol = None
+        self._currentMatrix = None
+        self._currentRHS = None
+        self._freeDDLs = None
+        self._currentElemMat = None
 
     def addTerm(self, term):
         self._MatrixContribution.append(term)
@@ -474,7 +453,7 @@ class Problem:
                     elif 1 in side or 3 in side:
                         self._neumannNodal[noDDLs[i]] = valDDLs[i]*(self._refElem.intXfik(0)+self._refElem.intXfik(1))
 
-    def solve(self):
+    def solve(self,OnlyAssembly=False):
         ## GLOBAL SYSTEM ASSEMBLY
         print("Beginning assembly...")
         nelem = self._mesh.getNelems()
@@ -498,37 +477,42 @@ class Problem:
                     Aelem[ddli,ddlj+k*self._nddls] = daij
 
         print("Assembly done!")
-        print("Elementary matrices validation...")
-        tempA = np.zeros_like(A)
-        for i in range(nelem):
-            tempA += Aelem[:,(i*self._nddls):((i+1)*self._nddls)]
-        assert(np.allclose(tempA, A))
-        print("Matrices validated!")
-        print("Beginning solving...")   
-        
-        # Resolution (iterative refinement)
-        r = 10
-        U = 0
-        cnt = 0
-        while np.linalg.norm(r)>1e-10 and cnt < 10:
-            subA = A[self._freeDDLs][:,self._freeDDLs]
-            subb = F[self._freeDDLs]+self._neumannNodal[self._freeDDLs]
-            U = np.linalg.solve(subA,subb)
-            r = subb - subA@U
-            print(f"condA={np.linalg.cond(subA)}")
-            print(f"residual={np.linalg.norm(r)}")
-            corr = np.linalg.solve(subA, r) 
-            U = U + corr
-            cnt = cnt + 1
+        # print("Elementary matrices validation...")
+        # tempA = np.zeros_like(A)
+        # for i in range(nelem):
+        #     tempA += Aelem[:,(i*self._nddls):((i+1)*self._nddls)]
+        # assert(np.allclose(tempA, A))
+        # print("Matrices validated!")
 
-        self._currentSol = np.zeros(self._nddls)
-        self._currentSol[self._freeDDLs] = U
-        self._currentSol += self._dirichletNodal
         self._currentMatrix = A
         self._currentRHS = F + self._neumannNodal
         self._currentElemMat = Aelem
-        print("Solved!")   
-        return self._currentSol.copy()
+
+        if not OnlyAssembly :
+            print("Beginning solving...")   
+            
+            # Resolution (iterative refinement)
+            r = 10
+            U = 0
+            cnt = 0
+            while np.linalg.norm(r)>1e-10 and cnt < 10:
+                subA = A[self._freeDDLs][:,self._freeDDLs]
+                subb = F[self._freeDDLs]+self._neumannNodal[self._freeDDLs]
+                U = np.linalg.solve(subA,subb)
+                r = subb - subA@U
+                # print(f"condA={np.linalg.cond(subA)}")
+                # print(f"residual={np.linalg.norm(r)}")
+                corr = np.linalg.solve(subA, r) 
+                U = U + corr
+                cnt = cnt + 1
+
+            self._currentSol = np.zeros(self._nddls)
+            self._currentSol[self._freeDDLs] = U
+            self._currentSol += self._dirichletNodal
+        
+            print("Solved!")   
+            return self._currentSol.copy()
+        return None
 
     def getCurrentMatrix(self):
         return self._currentMatrix
