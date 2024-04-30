@@ -20,6 +20,7 @@ class Mesh:
         self._h = h
         self._l = l
         self._generateMesh(nelemx, nelemy)
+        self._buildDualGraphAdjacencyMatrix()
 
     def getNnodes(self):
         return self._nnodes
@@ -65,6 +66,9 @@ class Mesh:
     
     def getRightBound(self):
         return self._right.copy()
+    
+    def getElementAdjacencyMatrix(self):
+        return self._adj.copy()
 
     def _generateMesh(self, nelemx, nelemy):
         print("Beginning mesh generation...")
@@ -144,6 +148,31 @@ class Mesh:
         elif k in self._top:
             which = 3
         return which
+    
+    def displayDiscontinuousByElementField(self, field):
+        plt.figure(figsize=(12,6))
+        vertices = self.getElemNodes()[:,:3]
+        coords = self.getNodeCoord()
+        for i in range(self._nelem):
+            cv = coords[vertices[i,:]]
+            plt.fill(cv[:,0],cv[:,1],facecolor=(field[i],field[i],field[i]),edgecolor="r",linewidth=0)
+        plt.show()
+    
+    def _buildDualGraphAdjacencyMatrix(self):
+        self._adj = np.zeros((self._nelem,self._nelem))
+        for i in range(self._nelem):
+            self._adj[i,i] = 0
+            if i%(2*self._h) == 2*self._h-1:
+                self._adj[i,i-1] = self._adj[i-1,i] = 1
+                if i+2*self._h < self._nelem:
+                    self._adj[i,i+2*self._h-1] = self._adj[i+2*self._h-1,i] = 1
+            elif i%(2*self._h) == 0:
+                self._adj[i,i+1] = self._adj[i+1,i] = 1
+            else:
+                self._adj[i,i+1] = self._adj[i+1,i] = 1
+                self._adj[i,i-1] = self._adj[i-1,i] = 1
+                if i%2 == 1 and i+2*self._h < self._nelem:
+                    self._adj[i,i+2*self._h-1] = self._adj[i+2*self._h-1,i] = 1
 
 ######################################################
 #
