@@ -20,7 +20,7 @@ class Mesh:
         self._h = h
         self._l = l
         self._generateMesh(nelemx, nelemy)
-        self._buildDualGraphAdjacencyMatrix()
+        self._buildDualGraphAdjacencyMatrix(nelemx)
 
     def getNnodes(self):
         return self._nnodes
@@ -158,21 +158,21 @@ class Mesh:
             plt.fill(cv[:,0],cv[:,1],facecolor=(field[i],field[i],field[i]),edgecolor="r",linewidth=0)
         plt.show()
     
-    def _buildDualGraphAdjacencyMatrix(self):
+    def _buildDualGraphAdjacencyMatrix(self, nelemx):
         self._adj = np.zeros((self._nelem,self._nelem))
         for i in range(self._nelem):
             self._adj[i,i] = 0
-            if i%(2*self._h) == 2*self._h-1:
+            if i%(2*nelemx) == 2*nelemx-1:
                 self._adj[i,i-1] = self._adj[i-1,i] = 1
-                if i+2*self._h < self._nelem:
-                    self._adj[i,i+2*self._h-1] = self._adj[i+2*self._h-1,i] = 1
-            elif i%(2*self._h) == 0:
+                if i+2*nelemx < self._nelem:
+                    self._adj[i,i+2*nelemx-1] = self._adj[i+2*nelemx-1,i] = 1
+            elif i%(2*nelemx) == 0:
                 self._adj[i,i+1] = self._adj[i+1,i] = 1
             else:
                 self._adj[i,i+1] = self._adj[i+1,i] = 1
                 self._adj[i,i-1] = self._adj[i-1,i] = 1
-                if i%2 == 1 and i+2*self._h < self._nelem:
-                    self._adj[i,i+2*self._h-1] = self._adj[i+2*self._h-1,i] = 1
+                if i%2 == 1 and i+2*nelemx < self._nelem:
+                    self._adj[i,i+2*nelemx-1] = self._adj[i+2*nelemx-1,i] = 1
 
 ######################################################
 #
