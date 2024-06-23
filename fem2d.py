@@ -150,7 +150,8 @@ class Mesh:
         return which
     
     def displayDiscontinuousByElementField(self, field):
-        plt.figure(figsize=(12,6))
+        ratio = self._l/self._h
+        plt.figure(figsize=(ratio*12,12))
         vertices = self.getElemNodes()[:,:3]
         coords = self.getNodeCoord()
         for i in range(self._nelem):
