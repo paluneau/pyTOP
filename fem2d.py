@@ -342,6 +342,7 @@ class IntegralTerm:
     def __init__(self, refelem, nelem):
         self._refElem = refelem
         self._nElem = nelem
+        self._hasChanged = False
 
     @abc.abstractmethod
     def integrate(self, i, j, k):
@@ -353,6 +354,7 @@ class RHSIntegralTerm:
 
     def __init__(self, refelem):
         self._refElem = refelem
+        self._hasChanged = False
 
     @abc.abstractmethod
     def integrate(self, i, k):
@@ -365,7 +367,9 @@ class DiffusionTerm(IntegralTerm):
         self._tensor = None
 
     def setParams(self,tensor):
-        self._tensor = tensor
+        if not np.allclose(self._tensor,tensor):
+            self._tensor = tensor
+            self._hasChanged = True
 
     def integrate(self, i, j, k):
         return self._refElem.intM1gradfikDotM2gradfjk(self._tensor[k],np.eye(2),i%6,j%6,k)
@@ -379,8 +383,10 @@ class ElasticityTerm(IntegralTerm):
         self._Nu = 0
 
     def setParams(self,E,nu):
-        self._YoungMod = E*np.ones(self._nElem)
-        self._Nu = nu
+        if not (np.allclose(self._YoungMod,E) and np.allclose(nu,self._Nu)):
+            self._YoungMod = E*np.ones(self._nElem)
+            self._Nu = nu
+            self._hasChanged = True
 
     def integrate(self, i, j, k):
         # Propriétés mécaniques (HPP + plane stress, Voigt form)
@@ -399,6 +405,7 @@ class SourceTermScal(RHSIntegralTerm):
 
     def setParams(self,Fb):
         self._Fb = Fb
+        self._hasChanged = True
 
     def integrate(self, i, k):
         return self._refElem.intgxfik(self._Fb,i%6,k)
@@ -412,6 +419,7 @@ class SourceTermVec(RHSIntegralTerm):
 
     def setParams(self,Fb):
         self._Fb = Fb
+        self._hasChanged = True
 
     def integrate(self, i, k):
         ei = lambda i : np.array([1,0]) if i<6 else np.array([0,1])
@@ -485,61 +493,66 @@ class Problem:
 
     def solve(self,OnlyAssembly=False):
         ## GLOBAL SYSTEM ASSEMBLY
-        print("Beginning assembly...")
         nelem = self._mesh.getNelems()
 
-        A = np.zeros((self._nddls,self._nddls))
-        F = np.zeros(self._nddls)
-        Aelem = sp.lil_matrix(np.zeros((self._nddls,nelem*self._nddls)))
-        for k in range(nelem):
-            for i in range(self._addres.shape[1]):
-                ddli = self._addres[k,i]
-                for Int in self._RHSContribution:
-                    F[ddli] += Int.integrate(i,k)
-                for j in range(self._addres.shape[1]):
-                    ddlj = self._addres[k,j]
-                    daij = 0
-                    for Int in self._MatrixContribution:
-                        valint = Int.integrate(i,j,k)
-                        daij += valint
-                        F[ddli] -= self._dirichletNodal[ddlj]*valint
-                    A[ddli,ddlj] += daij
-                    Aelem[ddli,ddlj+k*self._nddls] = daij
+        # TODO  : check for changes in matrix and RHS separately
+        anyChange = np.any([term._hasChanged for term in (self._MatrixContribution + self._RHSContribution)])
 
-        print("Assembly done!")
-        # print("Elementary matrices validation...")
-        # tempA = np.zeros_like(A)
-        # for i in range(nelem):
-        #     tempA += Aelem[:,(i*self._nddls):((i+1)*self._nddls)]
-        # assert(np.allclose(tempA, A))
-        # print("Matrices validated!")
-
-        self._currentMatrix = A
-        self._currentRHS = F + self._neumannNodal
-        self._currentElemMat = Aelem
-
-        if not OnlyAssembly :
-            print("Beginning solving...")   
+        if anyChange:
+            print("Beginning assembly...")
+            A = np.zeros((self._nddls,self._nddls))
+            F = np.zeros(self._nddls)
+            Aelem = sp.lil_matrix(np.zeros((self._nddls,nelem*self._nddls)))
+            for k in range(nelem):
+                for i in range(self._addres.shape[1]):
+                    ddli = self._addres[k,i]
+                    for Int in self._RHSContribution:
+                        F[ddli] += Int.integrate(i,k)
+                    for j in range(self._addres.shape[1]):
+                        ddlj = self._addres[k,j]
+                        daij = 0
+                        for Int in self._MatrixContribution:
+                            valint = Int.integrate(i,j,k)
+                            daij += valint
+                            F[ddli] -= self._dirichletNodal[ddlj]*valint
+                        A[ddli,ddlj] += daij
+                        Aelem[ddli,ddlj+k*self._nddls] = daij
             
+            print("Assembly done!")
+            # print("Elementary matrices validation...")
+            # tempA = np.zeros_like(A)
+            # for i in range(nelem):
+            #     tempA += Aelem[:,(i*self._nddls):((i+1)*self._nddls)]
+            # assert(np.allclose(tempA, A))
+            # print("Matrices validated!")
+
+            self._currentMatrix = A
+            self._currentRHS = F + self._neumannNodal
+            self._currentElemMat = Aelem
+            for term in (self._MatrixContribution + self._RHSContribution):
+                term._hasChanged = False
+
+        if anyChange and not OnlyAssembly :
+            print("Beginning solving...")
             # Resolution (iterative refinement)
-            r = 10
-            U = 0
-            cnt = 0
+            #r = 10
+            #U = 0
+            #cnt = 0
             #while np.linalg.norm(r)>1e-10 and cnt < 10:
-            subA = A[self._freeDDLs][:,self._freeDDLs]
-            subb = F[self._freeDDLs]+self._neumannNodal[self._freeDDLs]
+            subA = self._currentMatrix[self._freeDDLs][:,self._freeDDLs]
+            subb = self._currentRHS[self._freeDDLs]
             U = np.linalg.solve(subA,subb)
             r = subb - subA@U
             # print(f"condA={np.linalg.cond(subA)}")
             # print(f"residual={np.linalg.norm(r)}")
-            #corr = np.linalg.solve(subA,r) 
+            #corr = np.linalg.solve(subA,r)
             #U = U + corr
             #cnt = cnt + 1
 
             self._currentSol = np.zeros(self._nddls)
             self._currentSol[self._freeDDLs] = U
             self._currentSol += self._dirichletNodal
-        
+
             print(f"Solved! (residual = {np.linalg.norm(r)})")
             return self._currentSol.copy()
         return None
