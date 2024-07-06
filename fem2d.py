@@ -525,22 +525,22 @@ class Problem:
             r = 10
             U = 0
             cnt = 0
-            while np.linalg.norm(r)>1e-10 and cnt < 10:
-                subA = A[self._freeDDLs][:,self._freeDDLs]
-                subb = F[self._freeDDLs]+self._neumannNodal[self._freeDDLs]
-                U = np.linalg.solve(subA,subb)
-                r = subb - subA@U
-                # print(f"condA={np.linalg.cond(subA)}")
-                # print(f"residual={np.linalg.norm(r)}")
-                corr = np.linalg.solve(subA, r) 
-                U = U + corr
-                cnt = cnt + 1
+            #while np.linalg.norm(r)>1e-10 and cnt < 10:
+            subA = A[self._freeDDLs][:,self._freeDDLs]
+            subb = F[self._freeDDLs]+self._neumannNodal[self._freeDDLs]
+            U = np.linalg.solve(subA,subb)
+            r = subb - subA@U
+            # print(f"condA={np.linalg.cond(subA)}")
+            # print(f"residual={np.linalg.norm(r)}")
+            #corr = np.linalg.solve(subA,r) 
+            #U = U + corr
+            #cnt = cnt + 1
 
             self._currentSol = np.zeros(self._nddls)
             self._currentSol[self._freeDDLs] = U
             self._currentSol += self._dirichletNodal
         
-            print("Solved!")   
+            print(f"Solved! (residual = {np.linalg.norm(r)})")
             return self._currentSol.copy()
         return None
 
