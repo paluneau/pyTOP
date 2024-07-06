@@ -149,9 +149,9 @@ class Mesh:
             which = 3
         return which
     
-    def displayDiscontinuousByElementField(self, field):
+    def displayDiscontinuousByElementField(self, field, scale=12):
         ratio = self._l/self._h
-        plt.figure(figsize=(ratio*12,12))
+        plt.figure(figsize=(ratio*scale,scale))
         vertices = self.getElemNodes()[:,:3]
         coords = self.getNodeCoord()
         for i in range(self._nelem):
