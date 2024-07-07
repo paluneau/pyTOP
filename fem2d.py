@@ -248,7 +248,7 @@ class RefElement:
         for s in range(4):
             val += RefElement.wi[s]*(M2@invDTK@self._gradf[s,:,j].reshape((2,1))).T@M1@invDTK@self._gradf[s,:,i].reshape((2,1))
         return JK*val
-        
+
     def intgxfik(self,g,i,k):
         TK = self._Tb[2*k:2*(k+1),:2]
         JK = np.linalg.det(TK)
@@ -337,34 +337,41 @@ class RefElement:
 # WEAK FORMULATION
 #
 ######################################################
+
 class IntegralTerm:
-
-    def __init__(self, refelem, nelem):
-        self._refElem = refelem
-        self._nElem = nelem
-        self._hasChanged = False
-
-    @abc.abstractmethod
-    def integrate(self, i, j, k):
-        return None
-
-class RHSIntegralTerm:
-
-    _refElem = None
 
     def __init__(self, refelem):
         self._refElem = refelem
         self._hasChanged = False
+    
+    def hasChanged(self):
+        return self._hasChanged
+
+class MatIntegralTerm(IntegralTerm):
+
+    def __init__(self, refelem):
+        super().__init__(refelem)
+
+    @abc.abstractmethod
+    def integrate(self, i, j, k):
+        return None
+    
+
+class RHSIntegralTerm(IntegralTerm):
+
+    def __init__(self, refelem):
+        super().__init__(refelem)
 
     @abc.abstractmethod
     def integrate(self, i, k):
         return None
+    
 
-class DiffusionTerm(IntegralTerm):
+class DiffusionTerm(MatIntegralTerm):
 
-    def __init__(self, refelem, nelem):
-        super().__init__(refelem, nelem)
-        self._tensor = None
+    def __init__(self, refelem):
+        super().__init__(refelem)
+        self._tensor = 0
 
     def setParams(self,tensor):
         if not np.allclose(self._tensor,tensor):
@@ -375,16 +382,16 @@ class DiffusionTerm(IntegralTerm):
         return self._refElem.intM1gradfikDotM2gradfjk(self._tensor[k],np.eye(2),i%6,j%6,k)
 
 
-class ElasticityTerm(IntegralTerm):
+class ElasticityTerm(MatIntegralTerm):
 
-    def __init__(self, refelem, nelem):
-        super().__init__(refelem, nelem)
+    def __init__(self, refelem):
+        super().__init__(refelem)
         self._YoungMod = 0
         self._Nu = 0
 
     def setParams(self,E,nu):
         if not (np.allclose(self._YoungMod,E) and np.allclose(nu,self._Nu)):
-            self._YoungMod = E*np.ones(self._nElem)
+            self._YoungMod = E*np.ones(self._refElem._mesh.getNelems())
             self._Nu = nu
             self._hasChanged = True
 
@@ -457,6 +464,10 @@ class Problem:
         self._freeDDLs = None
         self._currentElemMat = None
 
+        # Statistics of usage
+        self._nResolution = 0
+        self._nAssembly = 0
+
     def addTerm(self, term):
         self._MatrixContribution.append(term)
 
@@ -496,10 +507,11 @@ class Problem:
         nelem = self._mesh.getNelems()
 
         # TODO  : check for changes in matrix and RHS separately
-        anyChange = np.any([term._hasChanged for term in (self._MatrixContribution + self._RHSContribution)])
+        anyChange = np.any([term.hasChanged() for term in (self._MatrixContribution + self._RHSContribution)])
 
         if anyChange:
             print("Beginning assembly...")
+            self._nAssembly += 1
             A = np.zeros((self._nddls,self._nddls))
             F = np.zeros(self._nddls)
             Aelem = sp.lil_matrix(np.zeros((self._nddls,nelem*self._nddls)))
@@ -517,7 +529,7 @@ class Problem:
                             F[ddli] -= self._dirichletNodal[ddlj]*valint
                         A[ddli,ddlj] += daij
                         Aelem[ddli,ddlj+k*self._nddls] = daij
-            
+
             print("Assembly done!")
             # print("Elementary matrices validation...")
             # tempA = np.zeros_like(A)
@@ -534,6 +546,7 @@ class Problem:
 
         if anyChange and not OnlyAssembly :
             print("Beginning solving...")
+            self._nResolution += 1
             # Resolution (iterative refinement)
             #r = 10
             #U = 0
@@ -568,3 +581,7 @@ class Problem:
 
     def getCurrentSolution(self):
         return self._currentSol
+    
+    def resetStatistics(self):
+        self._nAssembly = 0
+        self._nResolution = 0
