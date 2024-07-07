@@ -1,0 +1,3 @@
+*.tex
+__pycache__/**
+top_gp.ipynb
