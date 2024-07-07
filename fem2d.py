@@ -567,8 +567,7 @@ class Problem:
             self._currentSol += self._dirichletNodal
 
             print(f"Solved! (residual = {np.linalg.norm(r)})")
-            return self._currentSol.copy()
-        return None
+        return None if OnlyAssembly else self._currentSol.copy()
 
     def getCurrentMatrix(self):
         return self._currentMatrix
