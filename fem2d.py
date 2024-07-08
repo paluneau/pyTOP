@@ -366,7 +366,15 @@ class RHSIntegralTerm(IntegralTerm):
     def integrate(self, i, k):
         return None
     
+class ElementwiseIntegralTerm(IntegralTerm):
 
+    def __init__(self, refelem):
+        super().__init__(refelem)
+
+    @abc.abstractmethod
+    def integrate(self, k):
+        return None
+    
 class DiffusionTerm(MatIntegralTerm):
 
     def __init__(self, refelem):
@@ -404,7 +412,6 @@ class ElasticityTerm(MatIntegralTerm):
         return self._refElem.intM1gradfikDotM2gradfjk((self._YoungMod[k]*C)@Eps(i),Eps(j),i%6,j%6,k)
 
 class SourceTermScal(RHSIntegralTerm):
-    _Fb = None
 
     def __init__(self, refelem):
         super().__init__(refelem)
@@ -418,7 +425,6 @@ class SourceTermScal(RHSIntegralTerm):
         return self._refElem.intgxfik(self._Fb,i%6,k)
 
 class SourceTermVec(RHSIntegralTerm):
-    _Fb = None
 
     def __init__(self, refelem):
         super().__init__(refelem)
@@ -432,6 +438,73 @@ class SourceTermVec(RHSIntegralTerm):
         ei = lambda i : np.array([1,0]) if i<6 else np.array([0,1])
         g = lambda x : np.dot(self._Fb(x),ei(i))
         return self._refElem.intgxfik(g,i%6,k)
+
+# TODO : There seems to be a bug because this term is always 2 times larger than it should be
+class RHSAdjointCompliance(RHSIntegralTerm):
+
+    def __init__(self, refelem):
+        super().__init__(refelem)
+        self._integrator = ElasticityTerm(refelem)
+        self._U = 0
+        self._YoungMod = 0
+        self._Nu = 0
+
+    def setParams(self,E,nu,U):
+        if not (np.allclose(self._YoungMod,E) and np.allclose(nu,self._Nu) and np.allclose(U,self._U)):
+            self._YoungMod = E*np.ones(self._refElem._mesh.getNelems())
+            self._Nu = nu
+            self._U = U
+            self._hasChanged = True
+
+    def integrate(self, i, k):
+        # Propriétés mécaniques (HPP + plane stress, Voigt form)
+        # Champ du module de Young défini par élément, les DDLs correspondent aux numéros d'éléments
+
+        self._integrator.setParams(self._YoungMod,self._Nu)
+        #nu = self._Nu
+        #C = (1/(1-nu**2))*np.array([[1,nu,0],[nu,1,0],[0,0,0.5*(1-nu)]])
+        #Eps = lambda i : np.array([[1,0],[0,0],[0,1]]) if i<6 else np.array([[0,0],[0,1],[1,0]])
+        addres = self._refElem._mesh.getElemDDLVec()
+        totsum = 0
+        for j in range(addres.shape[1]):
+            ddlj = addres[k,j]
+            totsum += self._U[ddlj]*self._integrator.integrate(j,i,k)
+        return -0.5*totsum
+    
+
+# TODO : rewrite in terms of ElasticityTerm
+class DoubleContraction422(ElementwiseIntegralTerm):
+
+    def __init__(self, refelem):
+        super().__init__(refelem)
+        self._YoungMod = 0
+        self._Nu = 0
+        self._U = 0
+        self._V = 0
+
+    def setParams(self,E,nu,U,V):
+        if not (np.allclose(self._YoungMod,E) and np.allclose(nu,self._Nu) and np.allclose(U,self._U) and np.allclose(V,self._V)):
+            self._YoungMod = E*np.ones(self._refElem._mesh.getNelems())
+            self._Nu = nu
+            self._U = U
+            self._V = V
+            self._hasChanged = True
+
+    def integrate(self, k):
+        # Propriétés mécaniques (HPP + plane stress, Voigt form)
+        # Champ du module de Young défini par élément, les DDLs correspondent aux numéros d'éléments
+        nu = self._Nu
+        C = (1/(1-nu**2))*np.array([[1,nu,0],[nu,1,0],[0,0,0.5*(1-nu)]])
+        Eps = lambda i : np.array([[1,0],[0,0],[0,1]]) if i<6 else np.array([[0,0],[0,1],[1,0]])
+        addres = self._refElem._mesh.getElemDDLVec()
+        totsum = 0
+        for i in range(addres.shape[1]):
+            ddli = addres[k,i]
+            for j in range(addres.shape[1]):
+                ddlj = addres[k,j]
+                totsum += self._U[ddli]*self._V[ddlj]*self._refElem.intM1gradfikDotM2gradfjk((self._YoungMod[k]*C)@Eps(i),Eps(j),i%6,j%6,k)
+        return totsum
+    
 
 ######################################################
 #
