@@ -173,16 +173,8 @@ class ProjectedDescentLineSearchMethod:
 
         self._result = x0
         return x0
-
-class GradientDescent(ProjectedDescentLineSearchMethod):
-
-    def __init__(self):
-        super().__init__()
-
-    def descentDirection(self):
-        return -1*self._history[-1][2]
-
-class GradientDescentAdjointFree(GradientDescent):
+    
+class ComplianceAdjointFreeMethod(ProjectedDescentLineSearchMethod):
 
     def __init__(self):
         super().__init__()
@@ -195,6 +187,38 @@ class GradientDescentAdjointFree(GradientDescent):
 
     def solveAdjoint(self,x):
         return self._associatedAdjoint
+
+class GradientDescent(ProjectedDescentLineSearchMethod):
+
+    def __init__(self):
+        super().__init__()
+
+    def descentDirection(self):
+        return -1*self._history[-1][2]
+    
+class GradientDescentComplianceAdjointFree(ComplianceAdjointFreeMethod):
+
+    def __init__(self):
+        super().__init__()
+
+    def descentDirection(self):
+        return -1*self._history[-1][2]
+
+
+class SteepestDescentPollakRibiereAdjointFree(ComplianceAdjointFreeMethod):
+
+    def __init__(self):
+        super().__init__()
+        self.setHistoryDepth(2)
+
+    def descentDirection(self):
+        g = self._history[-1][2]
+        gprec = 0
+        beta = 0
+        if self._it >= 2:
+            gprec = self._history[-2][2]
+            beta = np.dot(g,g-gprec)/np.dot(gprec,gprec)
+        return -g + beta*gprec
 
 
 
