@@ -516,8 +516,9 @@ class Problem:
 
     # TODO: more granular resolution (separate assembly phases)
 
-    def __init__(self, mesh, dim):
+    def __init__(self, mesh, dim, name=""):
         assert(dim==1 or dim==2)
+        self._id = name
         self._mesh = mesh
         self._refElem = RefElement(mesh)
         self._dim = dim
@@ -583,7 +584,7 @@ class Problem:
         anyChange = np.any([term.hasChanged() for term in (self._MatrixContribution + self._RHSContribution)])
 
         if anyChange:
-            print("Beginning assembly...")
+            print(self._id + ":Beginning assembly...")
             self._nAssembly += 1
             A = np.zeros((self._nddls,self._nddls))
             F = np.zeros(self._nddls)
@@ -618,7 +619,7 @@ class Problem:
                 term._hasChanged = False
 
         if anyChange and not OnlyAssembly :
-            print("Beginning solving...")
+            print(self._id + ":Beginning solving...")
             self._nResolution += 1
             # Resolution (iterative refinement)
             #r = 10
