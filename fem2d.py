@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import abc
 import scipy.sparse as sp
+import threading as th
+from queue import SimpleQueue
 
 ######################################################
 #
@@ -512,11 +514,14 @@ class DoubleContraction422(ElementwiseIntegralTerm):
 #
 ######################################################
 
+def assemblyProcess(prob,elemList,queue):
+        A,F,Aelem = prob.elementsAssemble(elemList)
+        queue.put((A,F,Aelem))
 class Problem:
 
     # TODO: more granular resolution (separate assembly phases)
 
-    def __init__(self, mesh, dim, name=""):
+    def __init__(self, mesh, dim, name="", keepElemMat=True):
         assert(dim==1 or dim==2)
         self._id = name
         self._mesh = mesh
@@ -537,6 +542,7 @@ class Problem:
         self._currentRHS = None
         self._freeDDLs = None
         self._currentElemMat = None
+        self._keepElemMat = keepElemMat
 
         # Statistics of usage
         self._nResolution = 0
@@ -576,33 +582,70 @@ class Problem:
                     elif 1 in side or 3 in side:
                         self._neumannNodal[noDDLs[i]] = valDDLs[i]*(self._refElem.intXfik(0)+self._refElem.intXfik(1))
 
-    def solve(self,OnlyAssembly=False):
-        ## GLOBAL SYSTEM ASSEMBLY
+    def elementsAssemble(self,elemList):
+        Aelem = None
         nelem = self._mesh.getNelems()
+        A = np.zeros((self._nddls,self._nddls))
+        F = np.zeros(self._nddls)
+        if self._keepElemMat:
+            Aelem = sp.lil_matrix(np.zeros((self._nddls,nelem*self._nddls)))
+        for k in elemList:
+            for i in range(self._addres.shape[1]):
+                ddli = self._addres[k,i]
+                for Int in self._RHSContribution:
+                    F[ddli] += Int.integrate(i,k)
+                for j in range(self._addres.shape[1]):
+                    ddlj = self._addres[k,j]
+                    daij = 0
+                    for Int in self._MatrixContribution:
+                        valint = Int.integrate(i,j,k)
+                        daij += valint
+                        F[ddli] -= self._dirichletNodal[ddlj]*valint
+                    A[ddli,ddlj] += daij
+                    if self._keepElemMat:
+                        Aelem[ddli,ddlj+k*self._nddls] = daij
+        return A,F,Aelem
 
-        # TODO  : check for changes in matrix and RHS separately
+    def solve(self,OnlyAssembly=False,Nproc=1):
+        ## GLOBAL SYSTEM ASSEMBLY
+
+        # TODO : check for changes in matrix and RHS separately
         anyChange = np.any([term.hasChanged() for term in (self._MatrixContribution + self._RHSContribution)])
 
         if anyChange:
             print(self._id + ":Beginning assembly...")
             self._nAssembly += 1
-            A = np.zeros((self._nddls,self._nddls))
-            F = np.zeros(self._nddls)
-            Aelem = sp.lil_matrix(np.zeros((self._nddls,nelem*self._nddls)))
-            for k in range(nelem):
-                for i in range(self._addres.shape[1]):
-                    ddli = self._addres[k,i]
-                    for Int in self._RHSContribution:
-                        F[ddli] += Int.integrate(i,k)
-                    for j in range(self._addres.shape[1]):
-                        ddlj = self._addres[k,j]
-                        daij = 0
-                        for Int in self._MatrixContribution:
-                            valint = Int.integrate(i,j,k)
-                            daij += valint
-                            F[ddli] -= self._dirichletNodal[ddlj]*valint
-                        A[ddli,ddlj] += daij
-                        Aelem[ddli,ddlj+k*self._nddls] = daij
+            A=0
+            F=0
+            Aelem=0
+            if Nproc == 1:
+                A,F,Aelem = self.elementsAssemble(range(self._mesh.getNelems()))
+            else:
+                # Divide the elements in Nproc chunks
+                elemList = list(range(self._mesh.getNelems()))
+                chunk_size = len(elemList) // Nproc
+                chunks = [elemList[(chunk_size)*i:(chunk_size)*(i+1)] for i in range(Nproc)]
+                remainder = elemList[Nproc*chunk_size:]
+                for i in range(Nproc):
+                    if len(remainder) != 0:
+                        chunks[i].append(remainder.pop())
+                processes = []
+                results = SimpleQueue()
+                # Start processes
+                for i in range(Nproc):
+                    proc = th.Thread(target=assemblyProcess, args=(self,chunks[i],results))
+                    processes.append(proc)
+                    proc.start()
+                for i in range(Nproc):
+                    processes[i].join()
+                # Combine results
+                while not results.empty():
+                    mats = results.get()
+                    A += mats[0]
+                    F += mats[1]
+                    if self._keepElemMat:
+                        Aelem += mats[2]
+
 
             print("Assembly done!")
             # print("Elementary matrices validation...")
@@ -614,7 +657,8 @@ class Problem:
 
             self._currentMatrix = A
             self._currentRHS = F + self._neumannNodal
-            self._currentElemMat = Aelem
+            if self._keepElemMat:
+                self._currentElemMat = Aelem
             for term in (self._MatrixContribution + self._RHSContribution):
                 term._hasChanged = False
 
