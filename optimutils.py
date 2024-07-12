@@ -6,8 +6,9 @@ import abc
 
 class SolutionOperator:
 
-    def __init__(self, problem : fe.Problem):
+    def __init__(self, problem : fe.Problem,Nproc):
         self._problem = problem
+        self.Nproc = Nproc
 
     # This method should modify the parameters of self._problem using x
     @abc.abstractmethod
@@ -26,7 +27,7 @@ class SolutionOperator:
     
     def compute(self, x) -> np.array:
         self.setParams(x)
-        return self._problem.solve()
+        return self._problem.solve(Nproc=self.Nproc)
     
 class ProjectedDescentLineSearchMethod:
 
@@ -134,7 +135,7 @@ class ProjectedDescentLineSearchMethod:
             p = self.descentDirection()
             p = self.projectDirection(x0,p)
             ngradp = np.linalg.norm(p)
-            #p = p/np
+            p = p/ngradp
 
             # Compute next iterate
             xt = self.projectPoint(x0 + self._s0*p)
@@ -204,7 +205,6 @@ class GradientDescentComplianceAdjointFree(ComplianceAdjointFreeMethod):
     def descentDirection(self):
         return -1*self._history[-1][2]
 
-
 class SteepestDescentPollakRibiereAdjointFree(ComplianceAdjointFreeMethod):
 
     def __init__(self):
@@ -219,8 +219,6 @@ class SteepestDescentPollakRibiereAdjointFree(ComplianceAdjointFreeMethod):
             gprec = self._history[-2][2]
             beta = np.dot(g,g-gprec)/np.dot(gprec,gprec)
         return -g + beta*gprec
-
-
 
 def PODBasis(snaps, tol):
     snaps_mean = np.mean(snaps,axis=1)

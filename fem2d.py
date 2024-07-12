@@ -2,8 +2,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import abc
 import scipy.sparse as sp
-import threading as th
-from queue import SimpleQueue
+
+# Switch between multithreading and multiprocessing
+from multiprocessing import Process as Fork
+from multiprocessing import SimpleQueue
+#from threading import Thread as Fork
+#from queue import SimpleQueue
 
 ######################################################
 #
@@ -514,9 +518,7 @@ class DoubleContraction422(ElementwiseIntegralTerm):
 #
 ######################################################
 
-def assemblyProcess(prob,elemList,queue):
-        A,F,Aelem = prob.elementsAssemble(elemList)
-        queue.put((A,F,Aelem))
+# This function is called for parallel resolution
 class Problem:
 
     # TODO: more granular resolution (separate assembly phases)
@@ -605,6 +607,10 @@ class Problem:
                     if self._keepElemMat:
                         Aelem[ddli,ddlj+k*self._nddls] = daij
         return A,F,Aelem
+    
+    def elementsAssembleParallel(self,elemList,queue):
+        A,F,Aelem = self.elementsAssemble(elemList)
+        queue.put((A,F,Aelem))
 
     def solve(self,OnlyAssembly=False,Nproc=1):
         ## GLOBAL SYSTEM ASSEMBLY
@@ -620,7 +626,7 @@ class Problem:
             Aelem=0
             if Nproc == 1:
                 A,F,Aelem = self.elementsAssemble(range(self._mesh.getNelems()))
-            else:
+            elif Nproc>1:
                 # Divide the elements in Nproc chunks
                 elemList = list(range(self._mesh.getNelems()))
                 chunk_size = len(elemList) // Nproc
@@ -633,19 +639,18 @@ class Problem:
                 results = SimpleQueue()
                 # Start processes
                 for i in range(Nproc):
-                    proc = th.Thread(target=assemblyProcess, args=(self,chunks[i],results))
+                    proc = Fork(target=self.elementsAssembleParallel, args=(chunks[i],results))
                     processes.append(proc)
                     proc.start()
-                for i in range(Nproc):
-                    processes[i].join()
                 # Combine results
-                while not results.empty():
+                getCnt = 0
+                while getCnt<Nproc:
                     mats = results.get()
                     A += mats[0]
                     F += mats[1]
                     if self._keepElemMat:
                         Aelem += mats[2]
-
+                    getCnt += 1
 
             print("Assembly done!")
             # print("Elementary matrices validation...")
@@ -665,21 +670,12 @@ class Problem:
         if anyChange and not OnlyAssembly :
             print(self._id + ":Beginning solving...")
             self._nResolution += 1
-            # Resolution (iterative refinement)
-            #r = 10
-            #U = 0
-            #cnt = 0
-            #while np.linalg.norm(r)>1e-10 and cnt < 10:
             subA = self._currentMatrix[self._freeDDLs][:,self._freeDDLs]
             subb = self._currentRHS[self._freeDDLs]
             U = np.linalg.solve(subA,subb)
             r = subb - subA@U
             # print(f"condA={np.linalg.cond(subA)}")
             # print(f"residual={np.linalg.norm(r)}")
-            #corr = np.linalg.solve(subA,r)
-            #U = U + corr
-            #cnt = cnt + 1
-
             self._currentSol = np.zeros(self._nddls)
             self._currentSol[self._freeDDLs] = U
             self._currentSol += self._dirichletNodal
