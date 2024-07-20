@@ -17,12 +17,12 @@ class SolutionOperator:
 
     def getMatrix(self, x):
         self.setParams(x)
-        self._problem.solve(OnlyAssembly=True)
+        self._problem.solve(OnlyAssembly=True,Nproc=self.Nproc)
         return self._problem.getCurrentMatrix()
     
     def getRHS(self, x):
         self.setParams(x)
-        self._problem.solve(OnlyAssembly=True)
+        self._problem.solve(OnlyAssembly=True,Nproc=self.Nproc)
         return self._problem.getCurrentRHS()
     
     def compute(self, x) -> np.array:
@@ -35,9 +35,12 @@ class ProjectedDescentLineSearchMethod:
         self._it = 0
         self._lb = np.nan
         self._ub = np.nan
+        self._s0 = 1
+        self._withLS = False
         self._result = None
         self._history = []
         self._historyDepth = 2
+        self._state = 0 # 0 = in the main descent loop , 1 = in the linesearch loop
 
     def setBounds(self,lb,ub):
         self._lb = lb
@@ -123,6 +126,7 @@ class ProjectedDescentLineSearchMethod:
         while ngrad > self._gtol and ngradp > self._gtol and step > self._steptol and self._it < self._nmax:
 
             # Precompute known quantities at current iterate
+            self._state = 0
             U = self.solveState(x0)
             Uadj = self.solveAdjoint((x0,U))
             fx0 = self._f(x0,U)
@@ -135,7 +139,8 @@ class ProjectedDescentLineSearchMethod:
             p = self.descentDirection()
             p = self.projectDirection(x0,p)
             ngradp = np.linalg.norm(p)
-            p = p/ngradp
+            if self._withLS and ngradp > 1e-15:
+                p = p/ngradp
 
             # Compute next iterate
             xt = self.projectPoint(x0 + self._s0*p)
@@ -143,7 +148,8 @@ class ProjectedDescentLineSearchMethod:
             fxt = self._f(xt,Ut)
 
             # Armijo linesearch
-            if self._withLS is not None :
+            if self._withLS :
+                self._state = 1
                 m = -np.dot(p,gx0)
                 s = self._s0
                 j = 0
@@ -160,7 +166,7 @@ class ProjectedDescentLineSearchMethod:
             # Monitor
             print("-------------------------------------------------------------------------------")
             print(f"n = {self._it}")
-            print(f"xn = {xt}")
+            #print(f"xn = {xt}")
             print(f"fn = {fxt}")
             #print(f"gn = {gx0.T}")
             #print(f"pn = {p}")
@@ -219,141 +225,76 @@ class SteepestDescentPollakRibiereAdjointFree(ComplianceAdjointFreeMethod):
             gprec = self._history[-2][2]
             beta = np.dot(g,g-gprec)/np.dot(gprec,gprec)
         return -g + beta*gprec
+    
+class GradientDescentWithPODROM(GradientDescent):
+    def __init__(self,size,RBsize,RBtol,resTol):
+        super().__init__()
+        self._RBSize = RBsize
+        self._RBtol = RBtol
+        self._needNewRB = True
+        self._firstTime = True
+        self._V = None
+        self._snaps = np.zeros((size,self._RBSize))
+        self._resTol = resTol
+        self._nSVD = 0
+        self._nROMSolve = 0
 
-def PODBasis(snaps, tol):
-    snaps_mean = np.mean(snaps,axis=1)
-    snaps_cov = (snaps-snaps_mean).T@(snaps-snaps_mean)
-    _, SU, VUT = np.linalg.svd(snaps_cov, full_matrices=False)
-    i = 1
-    ratio = np.Infinity
-    while ratio > tol:
-        ratio = np.sum(np.diag(SU)[0:i])/np.sum(np.diag(SU))
-        i+=1
-    return VUT[0:i,:].T
+    def setRBSize(self,size):
+        self._RBSize = size
 
+    def PODBasis(self):
+        nddl = self._snaps.shape[0]
+        snaps_mean = np.reshape(np.mean(self._snaps,axis=1),(nddl,1))
+        snaps_cov = (self._snaps-snaps_mean)
+        VU, SU, _ = np.linalg.svd(snaps_cov, full_matrices=False)
+        self._nSVD += 1
+        i = 1
+        ratio = 0
+        while ratio < 1-self._RBtol:
+            ratio = np.sum(SU[0:i])/np.sum(SU)
+            i+=1
+        print(f"Reduced basis size : {i} (energy ratio = {ratio})")
+        return VU[:,0:i]
+    
+    def solveState(self,x):
+        ddl = self._snaps.shape[0]
+        U = None
+        if self._it < self._RBSize:
+            U = self._sol.compute(x)
+            if self._state == 0:
+                self._snaps[:,self._it] = U
+        else:
+            if self._needNewRB:
+                if not self._firstTime:
+                    U = self._sol.compute(x)
+                    self._snaps[:,0:-1] = self._snaps[:,1:]
+                    self._snaps[:,-1] = U
+                self._V = self.PODBasis()
+                self._needNewRB = False
+                self._firstTime = False
+            K = self._sol.getMatrix(x)
+            F = self._sol.getRHS(x)
+            #print(f"shape K : {K.shape}")
+            #print(f"shape F : {F.shape}")
+            Krb = self._V.T@K@self._V
+            #print(f"shape KRB : {Krb.shape}")
+            snaps_mean = np.reshape(np.mean(self._snaps,axis=1),(ddl,1))
+            Frb = self._V.T@F - (self._V.T@K@snaps_mean).flatten()
+            #print(f"shape Frb : {Frb.shape}")
+            Urb = np.linalg.solve(Krb,Frb)
+            self._nROMSolve += 1
+            #print(Krb,Frb,Urb)
+            U = self._V@Urb + snaps_mean.flatten()
+            freeDDLs = self._sol._problem._freeDDLs
+            res = np.linalg.norm(K[freeDDLs][:,freeDDLs]@U[freeDDLs]-F[freeDDLs])/np.linalg.norm(F[freeDDLs])
+            if res > self._resTol:
+                self._needNewRB = True
+                print(f"Recompute reduced basis (res={res})")
+            else:
+                print(f"Reduced basis valid (res={res})")
 
-# TODO : réécrire les deux solveurs comme des classes parce que ça manque de modularité là-dedans
-def DescentMethodPOD(x0, gtol, steptol, nmax, nsnap, f, grad, probetat, probadjoint, direction=None, lb=np.nan, ub=np.nan, s0=1, armijo=None):
-    ngrad = np.Infinity
-    ngradp = np.Infinity
-    step = np.Infinity
-    s = s0
-    i = 0
-    d = np.shape(x0)[0]
-    x_hist = np.zeros((d,nsnap))
-    U_hist = np.zeros((probetat._problem._nddls,nsnap))
-    Ua_hist = np.zeros((probadjoint._problem._nddls,nsnap))
+        self._associatedAdjoint = -1*U.copy()
+        return U
 
-    # Projection operators
-    def project_point(x):
-        if not np.isnan(ub) :
-            x[x>ub] = ub
-        if not np.isnan(lb) :
-            x[x<lb] = lb
-        return x
-
-    def project_direction(x,d):
-        if not np.isnan(ub) :
-            idxset = np.abs(x-ub)<1e-8
-            d[idxset] = np.min(np.vstack((d[idxset],np.zeros_like(d[idxset]))),axis=0)
-        if not np.isnan(lb) :
-            idxset = np.abs(x-lb)<1e-8
-            d[idxset] = np.max(np.vstack((d[idxset],np.zeros_like(d[idxset]))),axis=0)
-        return d
-
-    x0 = project_point(x0)
-    gprec = None
-    pprec = None
-    recomputeBasis = False
-
-    while ngrad > gtol and ngradp > gtol and step > steptol and i < nmax:
-
-        # Precompute known quantities at current iterate
-        fx0 = 0
-        gx0 = 0
-        ngrad = 0
-        Phi = 0
-        Umean = 0
-
-        if i == nsnap : 
-            recomputeBasis = True
-
-        if i < nsnap:
-            U = probetat.compute(x0)
-            Uadj = probadjoint.compute((x0,U))
-            fx0 = f(x0,U)
-            gx0 = grad(x0,U,Uadj)
-            ngrad = np.sqrt(np.sum(gx0**2))
-            x_hist[:,i] = x0
-            U_hist[:,i] = U
-            Ua_hist[:,i] = Uadj
-
-        if recomputeBasis:
-            Phi = PODBasis(U_hist,1e-6)
-            Umean = np.mean(U_hist,axis=1)
-            recomputeBasis=False
-
-        if i >= nsnap:
-            # compute ROM
-            Arb = Phi.T@probetat.getmatrix(x0)@Phi
-            Frb = Phi.T@(probetat._problem.getCurrentRHS()-probetat.getmatrix(x0)@Umean)
-            alph = np.linalg.solve(Arb, Frb)
-            U = Phi*alph + Umean
-
-            res = np.linalg.norm(probetat.getmatrix(x0)*U - probetat._problem.getCurrentRHS())
-            if res>1e-8:
-                recomputeBasis=True
-
-            Uadj = probadjoint.compute((x0,U))
-            fx0 = f(x0,U)
-            gx0 = grad(x0,U,Uadj)
-            ngrad = np.sqrt(np.sum(gx0**2))
-
-
-        # Compute projected descent direction
-        p = direction(x0,gx0) if direction is not None else -1*gx0
-        p = project_direction(x0,p)
-        ngradp = np.linalg.norm(p)
-        #p = p/np
-
-        # Compute next iterate
-        xt = project_point(x0 + s0*p)
-        # TODO : ici utiliser le modèle réduit si possible
-        Ut = probetat.compute(xt)
-        fxt = f(xt,Ut)
-
-        # Armijo linesearch
-        if armijo is not None :
-            m = -np.dot(p,gx0)
-            c = armijo[0]
-            t = armijo[1]
-            s = s0
-            j = 0
-            while (fx0-fxt < s*c*m) and j<armijo[2]:
-                xt = project_point(x0 + s*p)
-                s *= t
-                j = j+1
-                # TODO : ici aussi
-                Ut = probetat.compute(xt)
-                fxt = f(xt,Ut)
-
-        step = np.sqrt(np.sum((xt-x0)**2))
-
-        i+=1
-
-        # Monitor
-        print("-------------------------------------------------------------------------------")
-        print(f"n = {i}")
-        print(f"xn = {xt}")
-        print(f"fn = {fxt}")
-        #print(f"gn = {gx0.T}")
-        #print(f"pn = {p}")
-        print(f"sn = {s}")
-        print(f"|gn| = {ngrad}")
-        print(f"|pn| = {ngradp}")
-        print(f"|dxn| = {step}")
-
-        # Update current iterate
-        x0 = xt
-
-    return x0
+    def solveAdjoint(self,x):
+        return self._associatedAdjoint
