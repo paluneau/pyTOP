@@ -291,15 +291,15 @@ class GradientDescentWithPODROM(GradientDescent):
             t1 = time()
             self._tROMSolve += t1-t0
             freeDDLs = self._sol._problem._freeDDLs
-            res = np.linalg.norm(K[freeDDLs][:,freeDDLs]@U[freeDDLs]-F[freeDDLs])/np.linalg.norm(F[freeDDLs])
+            res = np.linalg.norm(K[freeDDLs][:,freeDDLs]@Uapp[freeDDLs]-F[freeDDLs])/np.linalg.norm(F[freeDDLs])
             if res > self._resTol:
                 self._needNewRB = True
                 if U is None:
-                    U = Uapp
+                    U = Uapp.copy()
                 print(f"Recompute reduced basis (res={res})")
             else:
                 print(f"Reduced basis valid (res={res})")
-                U = Uapp
+                U = Uapp.copy()
 
         self._associatedAdjoint = -1*U.copy()
         return U
