@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import abc
 import scipy.sparse as sp
+from time import time
 
 # Switch between multithreading and multiprocessing
 from multiprocessing import Process as Fork
@@ -549,6 +550,8 @@ class Problem:
         # Statistics of usage
         self._nResolution = 0
         self._nAssembly = 0
+        self._tAssembly = 0
+        self._tResolution = 0
 
     def addTerm(self, term):
         self._MatrixContribution.append(term)
@@ -620,6 +623,7 @@ class Problem:
 
         if anyChange:
             print(self._id + ":Beginning assembly...")
+            t0 = time()
             self._nAssembly += 1
             A=0
             F=0
@@ -653,6 +657,8 @@ class Problem:
                     getCnt += 1
 
             print("Assembly done!")
+            t1 = time()
+            self._tAssembly += t1-t0
             # print("Elementary matrices validation...")
             # tempA = np.zeros_like(A)
             # for i in range(nelem):
@@ -669,6 +675,7 @@ class Problem:
 
         if anyChange and not OnlyAssembly :
             print(self._id + ":Beginning solving...")
+            t0 = time()
             self._nResolution += 1
             subA = self._currentMatrix[self._freeDDLs][:,self._freeDDLs]
             subb = self._currentRHS[self._freeDDLs]
@@ -681,6 +688,8 @@ class Problem:
             self._currentSol += self._dirichletNodal
 
             print(f"Solved! (residual = {np.linalg.norm(r)})")
+            t1 = time()
+            self._tResolution += t1-t0
         return None if OnlyAssembly else self._currentSol.copy()
 
     def getCurrentMatrix(self):
@@ -698,3 +707,5 @@ class Problem:
     def resetStatistics(self):
         self._nAssembly = 0
         self._nResolution = 0
+        self._tAssembly = 0
+        self._tResolution = 0

@@ -1,6 +1,7 @@
 import numpy as np
 import fem2d as fe
 import abc
+from time import time
 
 # CLASSES FOR ADJOINT-BASED PDE-CONSTRAINED OPTIMIZATION
 
@@ -238,6 +239,8 @@ class GradientDescentWithPODROM(GradientDescent):
         self._resTol = resTol
         self._nSVD = 0
         self._nROMSolve = 0
+        self._tSVD = 0
+        self._tROMSolve = 0
 
     def setRBSize(self,size):
         self._RBSize = size
@@ -246,7 +249,10 @@ class GradientDescentWithPODROM(GradientDescent):
         nddl = self._snaps.shape[0]
         snaps_mean = np.reshape(np.mean(self._snaps,axis=1),(nddl,1))
         snaps_cov = (self._snaps-snaps_mean)
+        t0 = time()
         VU, SU, _ = np.linalg.svd(snaps_cov, full_matrices=False)
+        t1 = time()
+        self._tSVD += t1-t0
         self._nSVD += 1
         i = 1
         ratio = 0
@@ -274,24 +280,26 @@ class GradientDescentWithPODROM(GradientDescent):
                 self._firstTime = False
             K = self._sol.getMatrix(x)
             F = self._sol.getRHS(x)
-            #print(f"shape K : {K.shape}")
-            #print(f"shape F : {F.shape}")
+
+            t0 = time()
             Krb = self._V.T@K@self._V
-            #print(f"shape KRB : {Krb.shape}")
             snaps_mean = np.reshape(np.mean(self._snaps,axis=1),(ddl,1))
             Frb = self._V.T@F - (self._V.T@K@snaps_mean).flatten()
-            #print(f"shape Frb : {Frb.shape}")
             Urb = np.linalg.solve(Krb,Frb)
+            Uapp = self._V@Urb + snaps_mean.flatten()
             self._nROMSolve += 1
-            #print(Krb,Frb,Urb)
-            U = self._V@Urb + snaps_mean.flatten()
+            t1 = time()
+            self._tROMSolve += t1-t0
             freeDDLs = self._sol._problem._freeDDLs
             res = np.linalg.norm(K[freeDDLs][:,freeDDLs]@U[freeDDLs]-F[freeDDLs])/np.linalg.norm(F[freeDDLs])
             if res > self._resTol:
                 self._needNewRB = True
+                if U is None:
+                    U = Uapp
                 print(f"Recompute reduced basis (res={res})")
             else:
                 print(f"Reduced basis valid (res={res})")
+                U = Uapp
 
         self._associatedAdjoint = -1*U.copy()
         return U
