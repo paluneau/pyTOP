@@ -41,7 +41,11 @@ class ProjectedDescentLineSearchMethod:
         self._result = None
         self._history = []
         self._historyDepth = 2
-        self._state = 0 # 0 = in the main descent loop , 1 = in the linesearch loop
+        self._state = 0 # 0 = at initial point, 1=next iterate , 2 = in the linesearch loop
+        self._lsit = 0
+        self._increaseStep = False
+        self._currentStep = self._s0
+        self._backtrack = True
 
     def setBounds(self,lb,ub):
         self._lb = lb
@@ -86,12 +90,13 @@ class ProjectedDescentLineSearchMethod:
             d[idxset] = np.max(np.vstack((d[idxset],np.zeros_like(d[idxset]))),axis=0)
         return d
     
-    def setLineSearch(self,s0,c,t,lsmax):
+    def setLineSearch(self,s0,c,t,lsmax,backtrack=True):
         self._withLS = True
         self._s0 = s0
         self._c = c
         self._t = t
         self._lsmax = lsmax
+        self._backtrack = backtrack
 
     def setWithLineSearch(self,ls):
         self._withLS = ls
@@ -109,6 +114,10 @@ class ProjectedDescentLineSearchMethod:
         self._history.append((x,f,g))
         if len(self._history)>self._historyDepth:
             self._history.pop(0)
+
+    def acceptStep(self,x0,xt,fx0,fxt,p,gx0,s):
+        m = -np.dot(p,gx0)
+        return fx0-fxt >= s*self._c*m
     
     # Specify how to compute the descent direction
     @abc.abstractmethod
@@ -133,8 +142,11 @@ class ProjectedDescentLineSearchMethod:
             fx0 = self._f(x0,U)
             gx0 = self._g(x0,U,Uadj)
             ngrad = np.sqrt(np.sum(gx0**2))
-
             self.updateHistory(x0,fx0,gx0)
+
+            # Reset step length for backtracking line search
+            if self._backtrack:
+                self._currentStep = self._s0
 
             # Compute projected descent direction
             p = self.descentDirection()
@@ -144,22 +156,30 @@ class ProjectedDescentLineSearchMethod:
                 p = p/ngradp
 
             # Compute next iterate
-            xt = self.projectPoint(x0 + self._s0*p)
+            self._state = 1
+            xt = self.projectPoint(x0 + self._currentStep*p)
             Ut = self.solveState(xt)
             fxt = self._f(xt,Ut)
 
             # Armijo linesearch
             if self._withLS :
-                self._state = 1
-                m = -np.dot(p,gx0)
-                s = self._s0
-                j = 0
-                while (fx0-fxt < s*self._c*m) and j<self._lsmax:
+                self._state = 2
+                s = self._currentStep
+                if self._increaseStep:
+                    s *= (1/self._t)
+                    self._increaseStep = False
+                self._lsit = 0
+                while (not self.acceptStep(x0,xt,fx0,fxt,p,gx0,s)) and self._lsit<self._lsmax:
                     xt = self.projectPoint(x0 + s*p)
                     s *= self._t
-                    j = j+1
+                    self._lsit += 1
                     Ut = self.solveState(xt)
                     fxt = self._f(xt,Ut)
+            
+                self._currentStep = s
+
+                #if s<1e-5: #if we get under the lsmax tolerance
+                #    self._currentStep*=10
 
             step = np.sqrt(np.sum((xt-x0)**2))
             self._it+=1
@@ -175,6 +195,7 @@ class ProjectedDescentLineSearchMethod:
             print(f"|gn| = {ngrad}")
             print(f"|pn| = {ngradp}")
             print(f"|dxn| = {step}")
+            print(f"#ls = {self._lsit}")
 
             # Update current iterate
             x0 = xt
@@ -242,6 +263,7 @@ class GradientDescentWithPODROM(GradientDescent):
         self._tSVD = 0
         self._tROMSolve = 0
 
+
     def setRBSize(self,size):
         self._RBSize = size
 
@@ -302,6 +324,174 @@ class GradientDescentWithPODROM(GradientDescent):
                 U = Uapp.copy()
 
         self._associatedAdjoint = -1*U.copy()
+        return U
+
+    def solveAdjoint(self,x):
+        return self._associatedAdjoint
+    
+
+class GradientDescentWithGSROM(GradientDescent):
+    def __init__(self,size,RBsize,resTol):
+        super().__init__()
+        self._RBSize = RBsize
+        self._needNewRB = True
+        self._firstTime = True
+        self._V = None
+        self._snaps = np.zeros((size,self._RBSize))
+        self._resTol = resTol
+        self._nQR = 0
+        self._nROMSolve = 0
+        self._tQR = 0
+        self._tROMSolve = 0
+
+    def setRBSize(self,size):
+        self._RBSize = size
+
+    def GSBasis(self):
+        t0 = time()
+        Q,_ = np.linalg.qr(self._snaps)
+        t1 = time()
+        self._tQR += t1-t0
+        self._nQR += 1
+        return Q
+    
+    def solveState(self,x):
+        U = None
+        if self._it < self._RBSize:
+            U = self._sol.compute(x)
+            if self._state == 0:
+                self._snaps[:,self._it] = U
+        else:
+            if self._needNewRB:
+                if not self._firstTime:
+                    U = self._sol.compute(x)
+                    self._snaps[:,0:-1] = self._snaps[:,1:]
+                    self._snaps[:,-1] = U
+                self._V = self.GSBasis()
+                self._needNewRB = False
+                self._firstTime = False
+            K = self._sol.getMatrix(x)
+            F = self._sol.getRHS(x)
+
+            t0 = time()
+            Krb = self._V.T@K@self._V
+            Frb = self._V.T@F
+            Urb = np.linalg.solve(Krb,Frb)
+            Uapp = self._V@Urb
+            self._nROMSolve += 1
+            t1 = time()
+            self._tROMSolve += t1-t0
+            freeDDLs = self._sol._problem._freeDDLs
+            res = np.linalg.norm(K[freeDDLs][:,freeDDLs]@Uapp[freeDDLs]-F[freeDDLs])/np.linalg.norm(F[freeDDLs])
+            if res > self._resTol:
+                self._needNewRB = True
+                if U is None:
+                    U = Uapp.copy()
+                print(f"Recompute reduced basis (res={res})")
+            else:
+                print(f"Reduced basis valid (res={res})")
+                U = Uapp.copy()
+
+        self._associatedAdjoint = -1*U.copy()
+        return U
+
+    def solveAdjoint(self,x):
+        return self._associatedAdjoint
+    
+
+
+class GradientDescentPODEALS(GradientDescent):
+    def __init__(self,size,RBsize,RBtol,resTol):
+        super().__init__()
+        self._RBSize = RBsize
+        self._RBtol = RBtol
+        self._V = None
+        self._snaps = np.zeros((size,self._RBSize))
+        self._resTol = resTol
+        self._nSVD = 0
+        self._nROMSolve = 0
+        self._tSVD = 0
+        self._tROMSolve = 0
+        self._relresidue = np.Infinity
+        self._needNewRB = False
+        self._invalidRB = False
+
+
+    def setRBSize(self,size):
+        self._RBSize = size
+
+    def acceptStep(self,x0,xt,fx0,fxt,p,gx0,s):
+        suffDecr = super().acceptStep(x0,xt,fx0,fxt,p,gx0,s)
+        validROM = self._relresidue < self._resTol if self._it >= self._RBSize else True
+        # failure of linesearch
+        if self._state == 2 and not self._invalidRB and self._lsit >= self._lsmax:
+            self._needNewRB = True
+
+        return suffDecr and validROM
+
+    def PODBasis(self):
+        nddl = self._snaps.shape[0]
+        snaps_mean = np.reshape(np.mean(self._snaps,axis=1),(nddl,1))
+        snaps_cov = (self._snaps-snaps_mean)
+        t0 = time()
+        VU, SU, _ = np.linalg.svd(snaps_cov, full_matrices=False)
+        t1 = time()
+        self._tSVD += t1-t0
+        self._nSVD += 1
+        i = 1
+        ratio = 0
+        while ratio < 1-self._RBtol:
+            ratio = np.sum(SU[0:i])/np.sum(SU)
+            i+=1
+        print(f"Reduced basis size : {i} (energy ratio = {ratio})")
+        return VU[:,0:i]
+    
+    def solveState(self,x):
+        ddl = self._snaps.shape[0]
+        U = None
+        if self._it < self._RBSize:
+            U = self._sol.compute(x)
+            if self._state == 0:
+                self._snaps[:,self._it] = U
+        else:
+            if (self._state == 0 and not self._invalidRB) or (self._needNewRB and self._state == 2):
+                self._relresidue = np.Infinity
+                U = self._sol.compute(x)
+                if not np.allclose(U,self._snaps[:,-1]):
+                    self._snaps[:,0:-1] = self._snaps[:,1:]
+                    self._snaps[:,-1] = U
+                    self._V = self.PODBasis()
+                self._needNewRB = False
+            else:
+                K = self._sol.getMatrix(x)
+                F = self._sol.getRHS(x)
+
+                t0 = time()
+                Krb = self._V.T@K@self._V
+                snaps_mean = np.reshape(np.mean(self._snaps,axis=1),(ddl,1))
+                Frb = self._V.T@F - (self._V.T@K@snaps_mean).flatten()
+                Urb = np.linalg.solve(Krb,Frb)
+                U = self._V@Urb + snaps_mean.flatten()
+                self._nROMSolve += 1
+                t1 = time()
+                self._tROMSolve += t1-t0
+                freeDDLs = self._sol._problem._freeDDLs
+                prevres = self._relresidue
+                self._relresidue = np.linalg.norm(K[freeDDLs][:,freeDDLs]@U[freeDDLs]-F[freeDDLs])/np.linalg.norm(F[freeDDLs])
+                self._invalidRB = self._relresidue > self._resTol
+                if self._invalidRB:
+                    print(f"Reduced basis invalid (res={self._relresidue})")
+                else:
+                    print(f"Reduced basis valid (res={self._relresidue})")
+                if self._state == 2 and self._invalidRB and self._lsit > 1:
+                    self._needNewRB = np.abs(prevres-self._relresidue) < 1e-3
+                if self._relresidue < 0.9*self._resTol and self._it >= self._RBSize and self._state==0:
+                    self._increaseStep = True
+                if self._it == self._RBSize:
+                    self._backtrack = False
+
+        self._associatedAdjoint = -1*U
+
         return U
 
     def solveAdjoint(self,x):
