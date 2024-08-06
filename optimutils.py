@@ -46,6 +46,7 @@ class ProjectedDescentLineSearchMethod:
         self._increaseStep = False
         self._currentStep = self._s0
         self._backtrack = True
+        self._ell = 0
 
     def setBounds(self,lb,ub):
         self._lb = lb
@@ -90,13 +91,14 @@ class ProjectedDescentLineSearchMethod:
             d[idxset] = np.max(np.vstack((d[idxset],np.zeros_like(d[idxset]))),axis=0)
         return d
     
-    def setLineSearch(self,s0,c,t,lsmax,backtrack=True):
+    def setLineSearch(self,s0,c,t,lsmax,backtrack=True,ell=0):
         self._withLS = True
         self._s0 = s0
         self._c = c
         self._t = t
         self._lsmax = lsmax
         self._backtrack = backtrack
+        self._ell = ell
 
     def setWithLineSearch(self,ls):
         self._withLS = ls
@@ -129,7 +131,6 @@ class ProjectedDescentLineSearchMethod:
         ngrad = np.Infinity
         ngradp = np.Infinity
         step = np.Infinity
-        s = self._s0
 
         x0 = self.projectPoint(x0)
 
@@ -145,7 +146,7 @@ class ProjectedDescentLineSearchMethod:
             self.updateHistory(x0,fx0,gx0)
 
             # Reset step length for backtracking line search
-            if self._backtrack:
+            if self._backtrack :
                 self._currentStep = self._s0
 
             # Compute projected descent direction
@@ -157,6 +158,7 @@ class ProjectedDescentLineSearchMethod:
 
             # Compute next iterate
             self._state = 1
+            print(f"Before xk+1 -> Current step = {self._currentStep}")
             xt = self.projectPoint(x0 + self._currentStep*p)
             Ut = self.solveState(xt)
             fxt = self._f(xt,Ut)
@@ -165,18 +167,20 @@ class ProjectedDescentLineSearchMethod:
             if self._withLS :
                 self._state = 2
                 s = self._currentStep
+                print(f"Line search starts with step = {s}")
                 if self._increaseStep:
-                    s *= (1/self._t)
+                    s *= (1/self._t)**self._ell
                     self._increaseStep = False
                 self._lsit = 0
                 while (not self.acceptStep(x0,xt,fx0,fxt,p,gx0,s)) and self._lsit<self._lsmax:
                     xt = self.projectPoint(x0 + s*p)
                     s *= self._t
+                    self._currentStep = s
                     self._lsit += 1
                     Ut = self.solveState(xt)
                     fxt = self._f(xt,Ut)
             
-                self._currentStep = s
+                
 
                 #if s<1e-5: #if we get under the lsmax tolerance
                 #    self._currentStep*=10
@@ -400,8 +404,8 @@ class GradientDescentWithGSROM(GradientDescent):
     
 
 
-class GradientDescentPODEALS(GradientDescent):
-    def __init__(self,size,RBsize,RBtol,resTol):
+class GradientDescentPODErABLS(GradientDescent):
+    def __init__(self,size,RBsize,RBtol,resTol,tau):
         super().__init__()
         self._RBSize = RBsize
         self._RBtol = RBtol
@@ -413,8 +417,12 @@ class GradientDescentPODEALS(GradientDescent):
         self._tSVD = 0
         self._tROMSolve = 0
         self._relresidue = np.Infinity
-        self._needNewRB = False
+        self._needNewRB = True
         self._invalidRB = False
+        self._needNewRBState1 = False
+
+        self._tau = tau
+        
 
 
     def setRBSize(self,size):
@@ -423,9 +431,6 @@ class GradientDescentPODEALS(GradientDescent):
     def acceptStep(self,x0,xt,fx0,fxt,p,gx0,s):
         suffDecr = super().acceptStep(x0,xt,fx0,fxt,p,gx0,s)
         validROM = self._relresidue < self._resTol if self._it >= self._RBSize else True
-        # failure of linesearch
-        if self._state == 2 and not self._invalidRB and self._lsit >= self._lsmax:
-            self._needNewRB = True
 
         return suffDecr and validROM
 
@@ -454,7 +459,7 @@ class GradientDescentPODEALS(GradientDescent):
             if self._state == 0:
                 self._snaps[:,self._it] = U
         else:
-            if (self._state == 0 and not self._invalidRB) or (self._needNewRB and self._state == 2):
+            if (self._needNewRB and self._state != 1) or (self._needNewRBState1 and self._state == 1):
                 self._relresidue = np.Infinity
                 U = self._sol.compute(x)
                 if not np.allclose(U,self._snaps[:,-1]):
@@ -462,6 +467,7 @@ class GradientDescentPODEALS(GradientDescent):
                     self._snaps[:,-1] = U
                     self._V = self.PODBasis()
                 self._needNewRB = False
+                self._needNewRBState1 = False
             else:
                 K = self._sol.getMatrix(x)
                 F = self._sol.getRHS(x)
@@ -483,12 +489,23 @@ class GradientDescentPODEALS(GradientDescent):
                     print(f"Reduced basis invalid (res={self._relresidue})")
                 else:
                     print(f"Reduced basis valid (res={self._relresidue})")
+
+                # If during line search, residual is stagnating
                 if self._state == 2 and self._invalidRB and self._lsit > 1:
                     self._needNewRB = np.abs(prevres-self._relresidue) < 1e-3
-                if self._relresidue < 0.9*self._resTol and self._it >= self._RBSize and self._state==0:
-                    self._increaseStep = True
-                if self._it == self._RBSize:
-                    self._backtrack = False
+                # # If at the start of the iteration, the residual is smaller than tau*tol
+                # if self._relresidue < self._tau*self._resTol and self._it >= self._RBSize and self._state==0:
+                #     self._increaseStep = True
+                # # Switch between pure backtracking and adaptive when using ROM
+                # if self._it == self._RBSize:
+                #     self._backtrack = False
+                # If line search fails and the model is still valid
+                if self._state == 2 and not self._invalidRB and self._lsit>=self._lsmax-1:
+                    print("Restarting line search...")
+                    print(f"Initial step = {self._s0}")
+                    print(f"Current step = {self._currentStep}")
+                    self._currentStep = self._s0
+                    self._needNewRBState1 = True
 
         self._associatedAdjoint = -1*U
 

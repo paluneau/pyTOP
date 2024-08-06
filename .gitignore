@@ -1,3 +1,4 @@
 *.tex
+*.txt
 __pycache__/**
 treatment.ipynb
