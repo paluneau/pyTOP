@@ -389,7 +389,7 @@ class DiffusionTerm(MatIntegralTerm):
         self._tensor = 0
 
     def setParams(self,tensor):
-        if not np.allclose(self._tensor,tensor):
+        if not np.allclose(self._tensor,tensor,atol=1e-13):
             self._tensor = tensor
             self._hasChanged = True
 
@@ -405,7 +405,7 @@ class ElasticityTerm(MatIntegralTerm):
         self._Nu = 0
 
     def setParams(self,E,nu):
-        if not (np.allclose(self._YoungMod,E) and np.allclose(nu,self._Nu)):
+        if not (np.allclose(self._YoungMod,E,atol=1e-13) and np.allclose(nu,self._Nu,atol=1e-13)):
             self._YoungMod = E*np.ones(self._refElem._mesh.getNelems())
             self._Nu = nu
             self._hasChanged = True

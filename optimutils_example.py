@@ -111,8 +111,8 @@ if __name__ == '__main__':
     probadjoint = DensityToAdjoint()
 
     # Optimization
-    #optimizer = optimutils.GradientDescentWithPODROM(nddl,15,1e-15,0.1)
-    optimizer = optimutils.GradientDescentPODEALS(nddl,10,1e-9,0.1)
+    #optimizer = optimutils.GradientDescentWithPODROM(nddl,10,1e-9,0.1)
+    optimizer = optimutils.GradientDescentPODErABLS(nddl,10,1e-9,0.1,0.90,tolFullStart=5*(0.5)**30)
     #optimizer = optimutils.GradientDescentComplianceAdjointFree()
     #optimizer = optimutils.GradientDescentWithGSROM(nddl,10,0.1)
     #optimizer = optimutils.SteepestDescentPollakRibiereAdjointFree()
@@ -122,7 +122,7 @@ if __name__ == '__main__':
     optimizer.setSolutionOp(probetat)
     optimizer.setAdjointOp(probadjoint)
     optimizer.setConvergenceCriteria(1e-6,1e-15,1000)
-    optimizer.setLineSearch(5,0.9,0.5,20)
+    optimizer.setLineSearch(5,0.9,0.5,30,ell1=6,ell2=35) # s0 = 5 nmax = 20
     t0 = time()
     solopt = optimizer.optimize(np.ones(d))
     t1 = time()

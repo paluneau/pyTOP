@@ -45,8 +45,11 @@ class ProjectedDescentLineSearchMethod:
         self._lsit = 0
         self._increaseStep = False
         self._currentStep = self._s0
+        self._increasePow = 0
         self._backtrack = True
-        self._ell = 0
+        self._ell1 = 0
+        self._ell2 = 0
+        self._forceStep = False
 
     def setBounds(self,lb,ub):
         self._lb = lb
@@ -91,14 +94,16 @@ class ProjectedDescentLineSearchMethod:
             d[idxset] = np.max(np.vstack((d[idxset],np.zeros_like(d[idxset]))),axis=0)
         return d
     
-    def setLineSearch(self,s0,c,t,lsmax,backtrack=True,ell=0):
+    def setLineSearch(self,s0,c,t,lsmax,backtrack=True,ell1=0,ell2=0):
         self._withLS = True
         self._s0 = s0
         self._c = c
         self._t = t
         self._lsmax = lsmax
         self._backtrack = backtrack
-        self._ell = ell
+        self._ell1 = ell1
+        self._ell2 = ell2
+        self._increasePow = ell1
 
     def setWithLineSearch(self,ls):
         self._withLS = ls
@@ -134,7 +139,9 @@ class ProjectedDescentLineSearchMethod:
 
         x0 = self.projectPoint(x0)
 
-        while ngrad > self._gtol and ngradp > self._gtol and step > self._steptol and self._it < self._nmax:
+        while (ngrad > self._gtol and ngradp > self._gtol and step > self._steptol and self._it < self._nmax) or self._forceStep:
+
+            self._forceStep = False
 
             # Precompute known quantities at current iterate
             self._state = 0
@@ -159,6 +166,10 @@ class ProjectedDescentLineSearchMethod:
             # Compute next iterate
             self._state = 1
             print(f"Before xk+1 -> Current step = {self._currentStep}")
+            if self._increaseStep:
+                self._currentStep *= (1/self._t)**self._increasePow
+                self._increaseStep = False
+                print(f"Line search starts with increased step = {self._currentStep}")
             xt = self.projectPoint(x0 + self._currentStep*p)
             Ut = self.solveState(xt)
             fxt = self._f(xt,Ut)
@@ -167,10 +178,6 @@ class ProjectedDescentLineSearchMethod:
             if self._withLS :
                 self._state = 2
                 s = self._currentStep
-                print(f"Line search starts with step = {s}")
-                if self._increaseStep:
-                    s *= (1/self._t)**self._ell
-                    self._increaseStep = False
                 self._lsit = 0
                 while (not self.acceptStep(x0,xt,fx0,fxt,p,gx0,s)) and self._lsit<self._lsmax:
                     xt = self.projectPoint(x0 + s*p)
@@ -179,8 +186,6 @@ class ProjectedDescentLineSearchMethod:
                     self._lsit += 1
                     Ut = self.solveState(xt)
                     fxt = self._f(xt,Ut)
-            
-                
 
                 #if s<1e-5: #if we get under the lsmax tolerance
                 #    self._currentStep*=10
@@ -405,7 +410,7 @@ class GradientDescentWithGSROM(GradientDescent):
 
 
 class GradientDescentPODErABLS(GradientDescent):
-    def __init__(self,size,RBsize,RBtol,resTol,tau):
+    def __init__(self,size,RBsize,RBtol,resTol,tau,tolFullStart=np.Infinity):
         super().__init__()
         self._RBSize = RBsize
         self._RBtol = RBtol
@@ -420,6 +425,7 @@ class GradientDescentPODErABLS(GradientDescent):
         self._needNewRB = True
         self._invalidRB = False
         self._needNewRBState1 = False
+        self._tolFullRestart = np.Infinity
 
         self._tau = tau
         
@@ -462,10 +468,12 @@ class GradientDescentPODErABLS(GradientDescent):
             if (self._needNewRB and self._state != 1) or (self._needNewRBState1 and self._state == 1):
                 self._relresidue = np.Infinity
                 U = self._sol.compute(x)
-                if not np.allclose(U,self._snaps[:,-1]):
+                if not np.allclose(U,self._snaps[:,-1],atol=1e-13):
                     self._snaps[:,0:-1] = self._snaps[:,1:]
                     self._snaps[:,-1] = U
                     self._V = self.PODBasis()
+                else:
+                    print("New snapshot too similar. No ROM update.")
                 self._needNewRB = False
                 self._needNewRBState1 = False
             else:
@@ -493,19 +501,36 @@ class GradientDescentPODErABLS(GradientDescent):
                 # If during line search, residual is stagnating
                 if self._state == 2 and self._invalidRB and self._lsit > 1:
                     self._needNewRB = np.abs(prevres-self._relresidue) < 1e-3
-                # # If at the start of the iteration, the residual is smaller than tau*tol
-                # if self._relresidue < self._tau*self._resTol and self._it >= self._RBSize and self._state==0:
-                #     self._increaseStep = True
-                # # Switch between pure backtracking and adaptive when using ROM
-                # if self._it == self._RBSize:
-                #     self._backtrack = False
+
+                ## COMMENT THOSE TWO IFs FOR THE PURELY BACKTRACKING VERSION ##
+                # If at the start of the iteration, the residual is smaller than tau*tol
+                if self._relresidue < self._tau*self._resTol and self._it >= self._RBSize and self._state==0 and not self._needNewRBState1:
+                    self._increaseStep = True
+                    self._increasePow = self._ell1
+                # Switch between pure backtracking and adaptive when using ROM
+                if self._it == self._RBSize:
+                    self._backtrack = False
+                ###############################################################
+
                 # If line search fails and the model is still valid
+                # FOR THE PURELY BACKTRACKING, FORCE FULL RESTART EVERYTIME
                 if self._state == 2 and not self._invalidRB and self._lsit>=self._lsmax-1:
                     print("Restarting line search...")
-                    print(f"Initial step = {self._s0}")
+                    print(f"Default Initial step = {self._s0}")
                     print(f"Current step = {self._currentStep}")
-                    self._currentStep = self._s0
+                    increasedStep = self._currentStep*(1/self._t)**self._ell2
+                    print(f"Increased step = {increasedStep}")
+                    if increasedStep < self._tolFullRestart :
+                        self._currentStep = self._s0
+                        print("Full restart (initial step).")
+                    else:
+                        self._increasePow = self._ell2
+                        self._increaseStep = True
+                        print("Partial restart (increased step).")
+
                     self._needNewRBState1 = True
+                    # If restarting line search, it does not matter that the step has been reduced
+                    self._forceStep = True
 
         self._associatedAdjoint = -1*U
 
