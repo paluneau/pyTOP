@@ -1,3 +1,11 @@
 *.tex
 __pycache__/**
 optimsetup.py
+
+#Fichiers MEF++
+*.champs
+*.mail
+*.vtu
+chrono.txt
+*.enti
+*.msh
