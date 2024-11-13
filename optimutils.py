@@ -73,10 +73,11 @@ class ProjectedDescentLineSearchMethod:
     def setAdjointOp(self,sol:SolutionOperator):
         self._adj = sol
     
-    def setConvergenceCriteria(self,gtol,steptol,nmax):
+    def setConvergenceCriteria(self,gtol,steptol,maxvartol,nmax):
         self._gtol = gtol
         self._steptol = steptol
         self._nmax = nmax
+        self._maxvartol = maxvartol
 
     def projectPoint(self,x):
         if not np.isnan(self._ub) :
@@ -136,10 +137,11 @@ class ProjectedDescentLineSearchMethod:
         ngrad = np.Infinity
         ngradp = np.Infinity
         step = np.Infinity
+        relvar = np.Infinity
 
         x0 = self.projectPoint(x0)
 
-        while (ngrad > self._gtol and ngradp > self._gtol and step > self._steptol and self._it < self._nmax) or self._forceStep:
+        while (ngrad > self._gtol and ngradp > self._gtol and step > self._steptol and relvar > self._maxvartol and self._it < self._nmax) or self._forceStep:
 
             self._forceStep = False
 
@@ -191,6 +193,7 @@ class ProjectedDescentLineSearchMethod:
                 #    self._currentStep*=10
 
             step = np.sqrt(np.sum((xt-x0)**2))
+            relvar = np.max(np.abs(xt-x0)/x0)
             self._it+=1
 
             # Monitor
@@ -204,6 +207,7 @@ class ProjectedDescentLineSearchMethod:
             print(f"|gn| = {ngrad}")
             print(f"|pn| = {ngradp}")
             print(f"|dxn| = {step}")
+            print(f"Relative variation = {relvar}")
             print(f"#ls = {self._lsit}")
 
             # Update current iterate
